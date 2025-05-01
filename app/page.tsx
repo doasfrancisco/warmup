@@ -1,103 +1,122 @@
-import Image from "next/image";
+"use client"
+
+import { useEffect, useRef, useState } from 'react'
+import { PitchDetector } from 'pitchy'
 
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm/6 text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-[family-name:var(--font-geist-mono)] font-semibold">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [frequency, setFrequency] = useState<number | null>(null)
+  const [note, setNote] = useState<string | null>(null)
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
+  const [targetIndex, setTargetIndex] = useState<number>(0)
+  const [playing, setPlaying] = useState<boolean>(false)
+
+  const audioCtxRef = useRef<AudioContext | null>(null)
+
+  const scaleFrequencies = [261.63, 293.66, 329.63, 349.23, 392.0, 440.0, 493.88, 523.25]
+
+  const freqToNote = (freq: number) => {
+    const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+    const A4 = 440
+    const semitones = 12 * Math.log2(freq / A4)
+    const midi = Math.round(semitones) + 69
+    const name = NOTES[midi % 12]
+    const octave = Math.floor(midi / 12) - 1
+    return `${name}${octave}`
+  }
+
+  // Play the ascending scale tones sequentially using a fresh AudioContext
+  const playScale = async () => {
+    const playCtx = new AudioContext()
+    if (playCtx.state === 'suspended') await playCtx.resume()
+    setPlaying(true)
+    scaleFrequencies.forEach((freq, i) => {
+      const osc = playCtx.createOscillator()
+      osc.frequency.value = freq
+      osc.connect(playCtx.destination)
+      const start = playCtx.currentTime + i * 0.8
+      osc.start(start)
+      osc.stop(start + 0.6)
+    })
+    // After playback, reset matching
+    setTimeout(() => {
+      setPlaying(false)
+      setTargetIndex(0)
+      playCtx.close()
+    }, scaleFrequencies.length * 800)
+  }
+
+  // Initialize pitch detector and audio processing for mic input
+  useEffect(() => {
+    let detector: PitchDetector<Float32Array>
+    let processor: ScriptProcessorNode
+
+    const init = async () => {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const audioCtx = new AudioContext()
+      audioCtxRef.current = audioCtx
+      const source = audioCtx.createMediaStreamSource(stream)
+
+      detector = PitchDetector.forFloat32Array(2048)
+      processor = audioCtx.createScriptProcessor(2048, 1, 1)
+      processor.onaudioprocess = (e) => {
+        if (playing) return
+        const input = e.inputBuffer.getChannelData(0)
+        const [pitch, clarity] = detector.findPitch(input, audioCtx.sampleRate)
+        if (clarity > 0.8 && pitch) {
+          setFrequency(pitch)
+          setNote(freqToNote(pitch))
+        }
+      }
+
+      source.connect(processor)
+      processor.connect(audioCtx.destination)
+    }
+
+    init()
+    return () => {
+      processor.disconnect()
+      audioCtxRef.current?.close()
+    }
+  }, [playing])
+
+  // Check if current pitch matches target scale note
+  const isMatch = () => {
+    if (!frequency) return false
+    const targetFreq = scaleFrequencies[targetIndex]
+    const cents = 1200 * Math.log2(frequency / targetFreq)
+    return Math.abs(cents) < 20
+  }
+
+  // Advance to next note if matched
+  const handleNext = () => {
+    if (isMatch()) {
+      setTargetIndex((i) => Math.min(i + 1, scaleFrequencies.length - 1))
+      setFrequency(null)
+      setNote(null)
+    }
+  }
+
+  return (
+    <main className="flex flex-col items-center justify-center min-h-screen p-6">
+      <h1 className="text-3xl font-bold mb-4">🎵 Scale Matching Trainer</h1>
+      <button
+        onClick={playScale}
+        className="mb-4 px-4 py-2 bg-blue-500 text-white rounded"
+        disabled={playing}
+      >
+        {playing ? 'Playing...' : 'Play Scale'}
+      </button>
+      <div className="text-center">
+        <p>Target Note: <strong>{freqToNote(scaleFrequencies[targetIndex])}</strong></p>
+        <p>Your Pitch: {frequency ? `${note} (${frequency.toFixed(1)} Hz)` : '–––'}</p>
+        <button
+          onClick={handleNext}
+          className="mt-2 px-4 py-2 bg-green-500 text-white rounded"
+          disabled={!frequency}
         >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
-  );
+          {isMatch() ? 'Next Note' : 'Match Note'}
+        </button>
+      </div>
+    </main>
+  )
 }
